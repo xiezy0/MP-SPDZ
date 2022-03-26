@@ -32,6 +32,7 @@ public:
     DataSetup setup;
     int prime_length, gf2n_length;
 
+    // constructor of spdz2
     Spdz2() : sec(40), covert(2), stop_requested(false),
             minimal(false),
             prime_length(128), gf2n_length(40) {}
@@ -66,6 +67,8 @@ public:
         const Spdz2& spdz2 = setup_thread.spdz2;
         PlainPlayer P(spdz2.N, ((id + 1) << 8) + FD::T::type_char());
         EncCommit_<FD> EC(P, setup.pk, spdz2.covert, producer.required_randomness());
+        // ACTIVE 攻擊者模型
+        // EncCommit_<FD> EC(P, setup.pk, producer.required_randomness(), setup.FieldD, 1);
         DistDecrypt<FD> dd(P, setup.sk, setup.pk, setup.FieldD);
         MAC_Check<typename FD::T> MC(setup.alphai);
         string data_type = producer.data_type();
@@ -88,6 +91,10 @@ public:
             if (stop)
                 break;
 
+            cout << "alphai: " << setup.alphai << endl;
+            cout << "calpha-c[0]: " << setup.calpha.c0().a.data() << endl;
+            cout << "calpha-c[1]: " << setup.calpha.c1().a.data() << endl;
+            cout << "=========================================================================" << endl;
             producer.run(P, setup.pk, setup.calpha, EC, dd, setup.alphai);
             producer.sacrifice(P, MC);
             total += producer.num_slots();
@@ -116,29 +123,42 @@ public:
     const Spdz2& spdz2;
     Signal signal;
 
-    Spdz2SetupThread(int plaintext_length, const Spdz2& spdz2) :
-            plaintext_length(plaintext_length), spdz2(spdz2)
+    // spdz协议运行的构造函数明文的长度
+    Spdz2SetupThread(int plaintext_length, const Spdz2& spdz2) : plaintext_length(plaintext_length), spdz2(spdz2)
     {
         signal.lock();
     }
 
     void* run()
     {
+        // FD::T::tyoe_char() = 'p' 素数域
         PlainPlayer P(spdz2.N, FD::T::type_char());
+        // 创建公私钥，mac认证密钥的承诺
         setup.generate_setup(P.num_players(), plaintext_length, spdz2.sec, 0, false);
+        // 全局共享私钥，并让公钥成为一个全局密钥
         Run_Gen_Protocol(setup.pk, setup.sk, P, spdz2.covert, false);
+        // 生成MAC密钥
         generate_mac_key(setup.alphai, setup.calpha, setup.FieldD, setup.pk, P, spdz2.covert);
         signal.lock();
         signal.broadcast();
         signal.unlock();
 
         string dir = get_prep_sub_dir<Share<typename FD::T>>(P.num_players());
+
+//        TripleProducer_<FD> ff(setup.FieldD, P.my_num(), 0, true, dir);
+//        for (unsigned int i=0; i<4; i++)
+//        {
+//            cout << i << ":::::" << ff.ai[i] << endl;
+//        }
+//        cout << "prep_dir: " << dir << endl;
+
         Producer<FD>* producers[] =
         {
+            // 初始化三元组，和用于牺牲的三元组 计算域 计算方id
             new TripleProducer_<FD>(setup.FieldD, P.my_num(), 0, true, dir),
-            new SquareProducer<FD>(setup.FieldD, P.my_num(), 0, true, dir),
-            new_bit_producer(setup.FieldD, P, setup.pk, spdz2.covert, true, 0, true, dir),
-            new InverseProducer<FD>(setup.FieldD, P.my_num(), 0, true, true, dir),
+//            new SquareProducer<FD>(setup.FieldD, P.my_num(), 0, true, dir),
+//            new_bit_producer(setup.FieldD, P, setup.pk, spdz2.covert, true, 0, true, dir),
+//            new InverseProducer<FD>(setup.FieldD, P.my_num(), 0, true, true, dir),
         };
         vector<Spdz2GeneratorThread<FD>*> generators;
         for (int i = 0; i < 4; i++)
@@ -267,6 +287,7 @@ int main(int argc, const char** argv)
     Spdz2 spdz2;
     opt.get("-p")->getInt(my_num);
     opt.get("-N")->getInt(nplayers);
+    // 素数长度
     opt.get("-f")->getInt(spdz2.prime_length);
     opt.get("-pn")->getInt(portnum_base);
     opt.get("-h")->getString(hostname);
@@ -287,8 +308,11 @@ int main(int argc, const char** argv)
     pthread_t interrupt_thread;
     pthread_create(&interrupt_thread, 0, handle_interrupt, &spdz2);
 
-    Server* server = Server::start_networking(spdz2.N, my_num, nplayers,
-            hostname, portnum_base);
+    // 启动一个本地服务
+    Server* server = Server::start_networking(spdz2.N, my_num, nplayers, hostname, portnum_base);
+
+    //
+
     Spdz2SetupThread<FFT_Data> thread_p(spdz2.prime_length, spdz2);
     Spdz2SetupThread<P2Data> thread_2(spdz2.gf2n_length, spdz2);
     pthread_t threads[2];
